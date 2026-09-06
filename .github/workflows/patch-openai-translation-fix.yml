@@ -1,0 +1,90 @@
+name: Patch OpenAI translation cutoff handling
+
+on:
+  push:
+    branches:
+      - fix/layout-translation-completeness-20260906
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: patch-openai-translation-fix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: fix/layout-translation-completeness-20260906
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Patch finish_reason handling
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("crates/agentero-core/src/features/translate/mod.rs")
+          text = path.read_text()
+          old = '''    let v: Value = serde_json::from_str(&body)
+              .map_err(|e| AppError::message(format!("OpenAI-compatible parse: {e}")))?;
+          v.get("choices")
+              .and_then(|x| x.get(0))
+              .and_then(|x| x.get("message"))
+              .and_then(|x| x.get("content"))
+              .and_then(|x| x.as_str())
+              .map(|s| s.to_string())
+              .ok_or_else(|| AppError::message("Unexpected OpenAI-compatible response"))
+          }
+          '''
+          new = '''    let v: Value = serde_json::from_str(&body)
+              .map_err(|e| AppError::message(format!("OpenAI-compatible parse: {e}")))?;
+          let choice = v
+              .get("choices")
+              .and_then(|x| x.get(0))
+              .ok_or_else(|| AppError::message("Unexpected OpenAI-compatible response"))?;
+          if let Some(reason) = choice.get("finish_reason").and_then(|x| x.as_str()) {
+              if matches!(reason, "length" | "max_tokens" | "content_filter") {
+                  return Err(AppError::message(format!(
+                      "OpenAI-compatible translation incomplete (finish_reason={reason}); retry with a smaller chunk"
+                  )));
+              }
+          }
+          choice
+              .get("message")
+              .and_then(|x| x.get("content"))
+              .and_then(|x| x.as_str())
+              .map(|s| s.to_string())
+              .ok_or_else(|| AppError::message("Unexpected OpenAI-compatible response"))
+          }
+          '''
+          if old not in text:
+              if "OpenAI-compatible translation incomplete (finish_reason=" in text:
+                  print("Already patched")
+              else:
+                  raise SystemExit("Expected OpenAI response block not found")
+          else:
+              path.write_text(text.replace(old, new, 1))
+
+      - name: Format Rust
+        run: cargo fmt --all
+
+      - name: Commit patch if needed
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "Already patched"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/agentero-core/src/features/translate/mod.rs
+          git commit -m "fix: reject truncated OpenAI translation responses"
+          git push origin HEAD:fix/layout-translation-completeness-20260906
