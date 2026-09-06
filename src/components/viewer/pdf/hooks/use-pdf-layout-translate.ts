@@ -267,7 +267,11 @@ export function usePdfLayoutTranslate({
 				const pageItems = applyLayoutTranslateSidecar(pendingItems, sidecar);
 				const needsRun = hasPendingLayoutTranslateItems(pageItems);
 				setLayoutTranslateJob((prev) => {
-					const merged = mergeTranslatePageItems(prev.items, pageIndex, pageItems);
+					const merged = mergeTranslatePageItems(
+						prev.items,
+						pageIndex,
+						pageItems,
+					);
 					return {
 						status: needsRun
 							? "running"

@@ -160,13 +160,12 @@ type ExpandedItem = LayoutTranslateItem & {
 	__chunkCount?: number;
 };
 
-function expandOversizedItems(items: readonly LayoutTranslateItem[]): ExpandedItem[] {
+function expandOversizedItems(
+	items: readonly LayoutTranslateItem[],
+): ExpandedItem[] {
 	const out: ExpandedItem[] = [];
 	for (const item of items) {
-		if (
-			item.status === "done" &&
-			item.translated?.trim()
-		) {
+		if (item.status === "done" && item.translated?.trim()) {
 			out.push({ ...item });
 			continue;
 		}
@@ -233,7 +232,13 @@ function collapseExpandedItems(
 		const skipped = chunks.some((chunk) => chunk.status === "skipped");
 		return {
 			...original,
-			status: running ? "running" : failed ? "error" : skipped ? "skipped" : "pending",
+			status: running
+				? "running"
+				: failed
+					? "error"
+					: skipped
+						? "skipped"
+						: "pending",
 			translated: running
 				? chunks
 						.map((chunk) => chunk.translated?.trim() ?? "")
@@ -271,7 +276,8 @@ export async function runLayoutRegionTranslate(options: {
 }): Promise<LayoutTranslateItem[]> {
 	const template = options.items.map((item) => ({ ...item }));
 	let expanded = expandOversizedItems(template);
-	const publish = () => options.onUpdate(collapseExpandedItems(template, expanded));
+	const publish = () =>
+		options.onUpdate(collapseExpandedItems(template, expanded));
 
 	const runPass = async (
 		seed: ExpandedItem[],
@@ -298,7 +304,8 @@ export async function runLayoutRegionTranslate(options: {
 		const first = await runPass(expanded, options.concurrency);
 		expanded = mergeExpandedPass(expanded, first);
 	} catch (error) {
-		if (options.signal?.aborted) return collapseExpandedItems(template, expanded);
+		if (options.signal?.aborted)
+			return collapseExpandedItems(template, expanded);
 		// Resolver/session setup can fail before the legacy runner paints item
 		// errors. Mark the current pending set so the hook reports partial, not done.
 		expanded = expanded.map((item) =>
