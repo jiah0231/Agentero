@@ -54,14 +54,42 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=6144
         run: pnpm build
 
+      - name: Stage PDFium runtime
+        shell: pwsh
+        run: pnpm pdfium:stage
+
       # Rust tests/clippy run in the repository's normal CI. Keep this workflow
       # focused on native Windows packaging so a platform-specific unit-test
       # environment issue cannot prevent production installer generation.
       - name: Build Windows installers
-        shell: bash
+        shell: pwsh
         env:
           NODE_OPTIONS: --max-old-space-size=6144
-        run: pnpm tauri build --bundles nsis,msi --config '{"bundle":{"createUpdaterArtifacts":false}}'
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $ErrorActionPreference = "Continue"
+
+          & pnpm tauri info 2>&1 | Tee-Object -FilePath tauri-info.log
+
+          & pnpm tauri build --bundles nsis,msi --config '{"bundle":{"createUpdaterArtifacts":false}}' 2>&1 |
+            Tee-Object -FilePath tauri-build.log
+          $buildExitCode = $LASTEXITCODE
+          "tauri_exit_code=$buildExitCode" | Add-Content tauri-build.log
+
+          if ($buildExitCode -ne 0) {
+            exit $buildExitCode
+          }
+
+      - name: Upload Tauri diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Agentero-windows-tauri-diagnostics
+          path: |
+            tauri-info.log
+            tauri-build.log
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Collect installers
         shell: pwsh
