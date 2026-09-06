@@ -138,7 +138,14 @@ async function download() {
 	fs.mkdirSync(tmp, { recursive: true });
 	const archive = path.join(tmp, "pdfium.tgz");
 	fs.writeFileSync(archive, Buffer.from(await response.arrayBuffer()));
-	execFileSync("tar", ["-xzf", archive, "-C", tmp], { stdio: "inherit" });
+
+	// Run tar from inside the temporary directory and pass only a relative archive
+	// name. GNU tar interprets `C:\...` as a remote host/file pair when invoked
+	// from Git Bash on Windows, which made CI fail with "Cannot connect to C:".
+	execFileSync("tar", ["-xzf", path.basename(archive)], {
+		cwd: tmp,
+		stdio: "inherit",
+	});
 	fs.rmSync(archive, { force: true });
 	fs.rmSync(cacheDir, { recursive: true, force: true });
 	fs.mkdirSync(path.dirname(cacheDir), { recursive: true });
