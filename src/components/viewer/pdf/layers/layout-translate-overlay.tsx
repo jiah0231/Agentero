@@ -245,7 +245,9 @@ const ExactFitParagraph = memo(function ExactFitParagraph({
 
 	useLayoutEffect(() => {
 		const element = ref.current;
-		if (!element) return;
+		if (!element || boxWidthPx <= 0 || boxHeightPx <= 0) return;
+		// Wait until React has committed the text this fit pass is measuring.
+		if (element.textContent !== text) return;
 
 		const applySize = (size: number) => {
 			element.style.fontSize = `${size}px`;
