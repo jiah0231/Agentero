@@ -25,16 +25,26 @@ type LayoutTranslateOverlayProps = {
 };
 
 const LINE_HEIGHT = 1.25;
-const FS_MIN = 7;
+/**
+ * Translation can expand substantially relative to the source (especially
+ * English → CJK around formulas/citations). The previous 7px floor silently
+ * clipped the tail when even 7px did not fit. A lower emergency floor keeps the
+ * whole translation visible in dense boxes while normal paragraphs still use
+ * the paper-derived size.
+ */
+const FS_MIN = 4;
 const FS_MAX = 20;
+const FIT_SAFETY = 0.97;
 
 /** Wider glyphs for CJK; narrower for Latin (academic body). */
 function avgGlyphEm(text: string): number {
 	const t = text.replace(/\s+/g, "");
-	if (!t.length) return 0.55;
+	if (!t.length) return 0.58;
 	const cjk = (t.match(/[\u3000-\u9fff\u3400-\u4dbf]/g) ?? []).length;
 	const ratio = cjk / t.length;
-	return 0.5 * (1 - ratio) + 0.92 * ratio;
+	// Slightly conservative widths avoid an optimistic fit estimate followed by
+	// CSS overflow clipping at real browser font metrics.
+	return 0.55 * (1 - ratio) + 1 * ratio;
 }
 
 function estimateLineCount(
@@ -86,7 +96,7 @@ function fitFontSizeToBox(
 		if (h <= heightPx) lo = mid;
 		else hi = mid;
 	}
-	return lo;
+	return Math.max(FS_MIN, lo * FIT_SAFETY);
 }
 
 /**
