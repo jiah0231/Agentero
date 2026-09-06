@@ -1,0 +1,83 @@
+name: Build translation fix
+
+on:
+  push:
+    branches:
+      - fix/layout-translation-completeness-20260906
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: translation-fix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-build-windows:
+    name: Validate and build Windows
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Setup MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript typecheck
+        run: pnpm typecheck
+
+      - name: Frontend build
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: pnpm build
+
+      - name: Rust core tests
+        run: cargo test -p agentero-core
+
+      - name: Build Windows installers
+        shell: bash
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: pnpm tauri build --bundles nsis,msi --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Collect installers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifact | Out-Null
+          Get-ChildItem -Path src-tauri/target/release/bundle -Recurse -File |
+            Where-Object { $_.Extension -in '.exe', '.msi' } |
+            Copy-Item -Destination artifact
+          Get-ChildItem artifact
+
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: Agentero-0.9.4-translation-fix-windows
+          path: artifact/*
+          if-no-files-found: error
+          retention-days: 14
