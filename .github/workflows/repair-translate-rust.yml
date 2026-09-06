@@ -33,20 +33,15 @@ jobs:
           if fn_start < 0:
               raise SystemExit('OpenAI-compatible function not found')
 
-          start_anchor = '''    let v: Value = serde_json::from_str(&body)
-              .map_err(|e| AppError::message(format!("OpenAI-compatible parse: {e}")))?;
-          '''
-          start = text.find(start_anchor, fn_start)
+          start = text.find('    let v: Value = serde_json::from_str(&body)', fn_start)
           if start < 0:
-              raise SystemExit('OpenAI-compatible response start anchor not found')
+              raise SystemExit('OpenAI-compatible response start not found')
 
-          end_anchor = '''        .ok_or_else(|| AppError::message("Unexpected OpenAI-compatible response"))
-          }
-          '''
-          end = text.find(end_anchor, start)
+          end_marker = '\n}\n\n#[cfg(test)]'
+          end = text.find(end_marker, start)
           if end < 0:
-              raise SystemExit('OpenAI-compatible response end anchor not found')
-          end += len(end_anchor)
+              raise SystemExit('OpenAI-compatible function end not found')
+          end += 2
 
           replacement = '''    let v: Value = serde_json::from_str(&body)
               .map_err(|e| AppError::message(format!("OpenAI-compatible parse: {e}")))?;
