@@ -28,18 +28,27 @@ jobs:
 
           path = Path('crates/agentero-core/src/features/translate/mod.rs')
           text = path.read_text()
-          old = '''    let v: Value = serde_json::from_str(&body)
+          fn_anchor = 'async fn translate_openai_compatible('
+          fn_start = text.find(fn_anchor)
+          if fn_start < 0:
+              raise SystemExit('OpenAI-compatible function not found')
+
+          start_anchor = '''    let v: Value = serde_json::from_str(&body)
               .map_err(|e| AppError::message(format!("OpenAI-compatible parse: {e}")))?;
-          v.get("choices")
-              .and_then(|x| x.get(0))
-              .and_then(|x| x.get("message"))
-              .and_then(|x| x.get("content"))
-              .and_then(|x| x.as_str())
-              .map(|s| s.to_string())
-              .ok_or_else(|| AppError::message("Unexpected OpenAI-compatible response"))
+          '''
+          start = text.find(start_anchor, fn_start)
+          if start < 0:
+              raise SystemExit('OpenAI-compatible response start anchor not found')
+
+          end_anchor = '''        .ok_or_else(|| AppError::message("Unexpected OpenAI-compatible response"))
           }
           '''
-          new = '''    let v: Value = serde_json::from_str(&body)
+          end = text.find(end_anchor, start)
+          if end < 0:
+              raise SystemExit('OpenAI-compatible response end anchor not found')
+          end += len(end_anchor)
+
+          replacement = '''    let v: Value = serde_json::from_str(&body)
               .map_err(|e| AppError::message(format!("OpenAI-compatible parse: {e}")))?;
           let choice = v
               .get("choices")
@@ -60,9 +69,7 @@ jobs:
               .ok_or_else(|| AppError::message("Unexpected OpenAI-compatible response"))
           }
           '''
-          if old not in text:
-              raise SystemExit('OpenAI-compatible response block not found exactly; refusing broad edit')
-          text = text.replace(old, new, 1)
+          text = text[:start] + replacement + text[end:]
           path.write_text(text)
           PY
 
