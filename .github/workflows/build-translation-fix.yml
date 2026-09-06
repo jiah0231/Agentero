@@ -105,10 +105,19 @@ jobs:
       - name: Collect installers
         shell: pwsh
         run: |
+          $bundleRoot = "target/release/bundle"
+          if (-not (Test-Path $bundleRoot)) {
+            throw "Tauri bundle output not found at $bundleRoot"
+          }
+
+          $installers = Get-ChildItem -Path $bundleRoot -Recurse -File |
+            Where-Object { $_.Extension -in '.exe', '.msi' }
+          if (-not $installers) {
+            throw "No Windows installers found under $bundleRoot"
+          }
+
           New-Item -ItemType Directory -Force artifact | Out-Null
-          Get-ChildItem -Path src-tauri/target/release/bundle -Recurse -File |
-            Where-Object { $_.Extension -in '.exe', '.msi' } |
-            Copy-Item -Destination artifact
+          $installers | Copy-Item -Destination artifact
           Get-ChildItem artifact
 
       - name: Upload Windows installers
