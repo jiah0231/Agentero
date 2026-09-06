@@ -71,9 +71,19 @@ jobs:
 
           & pnpm tauri info 2>&1 | Tee-Object -FilePath tauri-info.log
 
-          & pnpm tauri build --bundles nsis,msi --config '{"bundle":{"createUpdaterArtifacts":false}}' 2>&1 |
-            Tee-Object -FilePath tauri-build.log
+          # Passing inline JSON through pnpm.cmd on Windows strips the embedded
+          # quotes before Tauri receives it. Use a config file so argv contains
+          # only a path and updater artifact generation can still be disabled
+          # for this unsigned validation build.
+          $overrideConfig = Join-Path $env:RUNNER_TEMP "tauri-translation-fix.json"
+          '{"bundle":{"createUpdaterArtifacts":false}}' |
+            Set-Content -Path $overrideConfig -Encoding utf8 -NoNewline
+          Get-Content $overrideConfig | Add-Content tauri-build.log
+
+          & pnpm tauri build --bundles nsis,msi --config $overrideConfig 2>&1 |
+            Tee-Object -FilePath tauri-build-command.log
           $buildExitCode = $LASTEXITCODE
+          Get-Content tauri-build-command.log | Add-Content tauri-build.log
           "tauri_exit_code=$buildExitCode" | Add-Content tauri-build.log
 
           if ($buildExitCode -ne 0) {
@@ -88,6 +98,7 @@ jobs:
           path: |
             tauri-info.log
             tauri-build.log
+            tauri-build-command.log
           if-no-files-found: warn
           retention-days: 14
 
