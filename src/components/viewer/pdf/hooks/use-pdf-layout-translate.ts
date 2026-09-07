@@ -100,6 +100,15 @@ function reuseCompletedTranslateItems(
 	});
 }
 
+/** Release interrupted blocks immediately; a cancelled runner may settle much later. */
+function resetRunningTranslateItems(
+	items: readonly LayoutTranslateItem[],
+): LayoutTranslateItem[] {
+	return items.map((item) =>
+		item.status === "running" ? { ...item, status: "pending" } : item,
+	);
+}
+
 export function usePdfLayoutTranslate({
 	docId,
 	layoutRawRegions,
@@ -133,7 +142,13 @@ export function usePdfLayoutTranslate({
 		layoutTranslateAbortRef.current?.abort();
 		layoutTranslateAbortRef.current = null;
 		setLayoutTranslateJob((prev) =>
-			prev.status === "running" ? { ...prev, status: "cancelled" } : prev,
+			prev.status === "running"
+				? {
+						...prev,
+						status: "cancelled",
+						items: resetRunningTranslateItems(prev.items),
+					}
+				: prev,
 		);
 	}, []);
 
@@ -189,18 +204,14 @@ export function usePdfLayoutTranslate({
 					}));
 				},
 			});
+			// Cancellation/replacement owns the visible state now. A late result
+			// must not restore cleared overlays or overwrite a newer sidecar write.
+			if (ac.signal.aborted || layoutTranslateAbortRef.current !== ac) return;
 			persistLayoutTranslateSidecarBestEffort(
 				paperAbsPath,
 				cacheKey,
 				finalItems,
 			);
-			if (ac.signal.aborted) {
-				setLayoutTranslateJob({
-					status: "cancelled",
-					items: applyHiddenPages(finalItems),
-				});
-				return;
-			}
 			setLayoutTranslateJob({
 				status: hasPendingLayoutTranslateItems(finalItems) ? "partial" : "done",
 				items: applyHiddenPages(finalItems),
@@ -256,7 +267,11 @@ export function usePdfLayoutTranslate({
 			);
 			setLayoutTranslateJob((prev) => ({
 				status: "running",
-				items: mergeTranslatePageItems(prev.items, pageIndex, pendingItems),
+				items: mergeTranslatePageItems(
+					resetRunningTranslateItems(prev.items),
+					pageIndex,
+					pendingItems,
+				),
 			}));
 			void (async () => {
 				const sidecar = await readLayoutTranslateSidecar(
@@ -306,6 +321,8 @@ export function usePdfLayoutTranslate({
 						}));
 					},
 				});
+				// Only the current live run may publish or persist its final result.
+				if (ac.signal.aborted || layoutTranslateAbortRef.current !== ac) return;
 				persistLayoutTranslateSidecarBestEffort(
 					paperAbsPath,
 					cacheKey,
@@ -315,15 +332,6 @@ export function usePdfLayoutTranslate({
 						replacePageIndexes: [pageIndex],
 					},
 				);
-				if (ac.signal.aborted) {
-					setLayoutTranslateJob((prev) => ({
-						status: "cancelled",
-						items: applyHiddenPages(
-							mergeTranslatePageItems(prev.items, pageIndex, finalPageItems),
-						),
-					}));
-					return;
-				}
 				setLayoutTranslateJob((prev) => {
 					const merged = mergeTranslatePageItems(
 						prev.items,
