@@ -190,6 +190,7 @@ function createHarness() {
 		for (let pass = 0; pass < 10; pass++) {
 			cursor = 0;
 			dirty = false;
+			// biome-ignore lint/correctness/useHookAtTopLevel: Test driver uses mocked hook slots, not React.
 			view = exported.usePdfLayoutTranslate(options);
 			const pendingEffects = effects;
 			effects = [];
