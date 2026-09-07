@@ -875,9 +875,19 @@ async fn translate_openai_compatible(
     }
     let v: Value = serde_json::from_str(&body)
         .map_err(|e| AppError::message(format!("OpenAI-compatible parse: {e}")))?;
-    v.get("choices")
+    let choice = v
+        .get("choices")
         .and_then(|x| x.get(0))
-        .and_then(|x| x.get("message"))
+        .ok_or_else(|| AppError::message("Unexpected OpenAI-compatible response"))?;
+    if let Some(reason) = choice.get("finish_reason").and_then(|x| x.as_str()) {
+        if matches!(reason, "length" | "max_tokens" | "content_filter") {
+            return Err(AppError::message(format!(
+                "OpenAI-compatible translation incomplete (finish_reason={reason}); retry with a smaller chunk"
+            )));
+        }
+    }
+    choice
+        .get("message")
         .and_then(|x| x.get("content"))
         .and_then(|x| x.as_str())
         .map(|s| s.to_string())
