@@ -3,7 +3,7 @@
  *
  * Its own hook because it shares nothing with hover or with the analysis run
  * beyond the region list it reads: one abortable job, progressive overlay items,
- * and the toolbar button's three-phase label (start → stop → clear).
+ * and the toolbar button's start → stop → retry/clear flow.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -53,9 +53,9 @@ export type PdfLayoutTranslate = {
 	layoutTranslateActive: boolean;
 	/** Toolbar button label for the current job phase. */
 	layoutTranslateLabel: string;
-	/** Toolbar button: start → stop → clear → start. */
+	/** Toolbar button: start → stop → retry incomplete / clear complete. */
 	toggleLayoutTranslate: () => void;
-	/** Per-page tag: translate this page, or hide visible translations for it. */
+	/** Per-page tag: retry incomplete blocks, translate this page, or hide a complete page. */
 	togglePageLayoutTranslate: (pageIndex: number) => void;
 };
 
@@ -73,6 +73,39 @@ function mergeTranslatePageItems(
 			a.readingOrder - b.readingOrder ||
 			a.bbox.y - b.bbox.y ||
 			a.bbox.x - b.bbox.x,
+	);
+}
+
+/** Keep successful blocks when retrying a partial job, even before cache debounce flushes. */
+function reuseCompletedTranslateItems(
+	pending: readonly LayoutTranslateItem[],
+	current: readonly LayoutTranslateItem[],
+): LayoutTranslateItem[] {
+	const byId = new Map(current.map((item) => [item.id, item]));
+	return pending.map((item) => {
+		const previous = byId.get(item.id);
+		if (
+			previous?.source === item.source &&
+			previous.status === "done" &&
+			previous.translated?.trim()
+		) {
+			return {
+				...item,
+				status: "done" as const,
+				translated: previous.translated.trim(),
+				error: undefined,
+			};
+		}
+		return { ...item };
+	});
+}
+
+/** Release interrupted blocks immediately; a cancelled runner may settle much later. */
+function resetRunningTranslateItems(
+	items: readonly LayoutTranslateItem[],
+): LayoutTranslateItem[] {
+	return items.map((item) =>
+		item.status === "running" ? { ...item, status: "pending" } : item,
 	);
 }
 
@@ -109,7 +142,13 @@ export function usePdfLayoutTranslate({
 		layoutTranslateAbortRef.current?.abort();
 		layoutTranslateAbortRef.current = null;
 		setLayoutTranslateJob((prev) =>
-			prev.status === "running" ? { ...prev, status: "cancelled" } : prev,
+			prev.status === "running"
+				? {
+						...prev,
+						status: "cancelled",
+						items: resetRunningTranslateItems(prev.items),
+					}
+				: prev,
 		);
 	}, []);
 
@@ -136,7 +175,10 @@ export function usePdfLayoutTranslate({
 		layoutTranslateAbortRef.current = ac;
 		hiddenPageIndexesRef.current.clear();
 		const cacheKey = currentLayoutTranslateCacheKey();
-		const pendingItems = toLayoutTranslateItems(regions);
+		const pendingItems = reuseCompletedTranslateItems(
+			toLayoutTranslateItems(regions),
+			layoutTranslateJobRef.current.items,
+		);
 		setLayoutTranslateJob({ status: "running", items: pendingItems });
 		void (async () => {
 			const sidecar = await readLayoutTranslateSidecar(paperAbsPath, cacheKey);
@@ -162,20 +204,16 @@ export function usePdfLayoutTranslate({
 					}));
 				},
 			});
+			// Cancellation/replacement owns the visible state now. A late result
+			// must not restore cleared overlays or overwrite a newer sidecar write.
+			if (ac.signal.aborted || layoutTranslateAbortRef.current !== ac) return;
 			persistLayoutTranslateSidecarBestEffort(
 				paperAbsPath,
 				cacheKey,
 				finalItems,
 			);
-			if (ac.signal.aborted) {
-				setLayoutTranslateJob({
-					status: "cancelled",
-					items: applyHiddenPages(finalItems),
-				});
-				return;
-			}
 			setLayoutTranslateJob({
-				status: "done",
+				status: hasPendingLayoutTranslateItems(finalItems) ? "partial" : "done",
 				items: applyHiddenPages(finalItems),
 			});
 		})()
@@ -184,7 +222,7 @@ export function usePdfLayoutTranslate({
 				const message = errorText(e);
 				notifyError(t("pdf.layoutTranslate.failed"), { description: message });
 				setLayoutTranslateJob((prev) => ({
-					status: "done",
+					status: "partial",
 					items: prev.items,
 				}));
 			})
@@ -221,10 +259,19 @@ export function usePdfLayoutTranslate({
 			layoutTranslateAbortRef.current = ac;
 			hiddenPageIndexesRef.current.delete(pageIndex);
 			const cacheKey = currentLayoutTranslateCacheKey();
-			const pendingItems = toLayoutTranslateItems(regions);
+			const pendingItems = reuseCompletedTranslateItems(
+				toLayoutTranslateItems(regions),
+				layoutTranslateJobRef.current.items.filter(
+					(item) => item.pageIndex === pageIndex,
+				),
+			);
 			setLayoutTranslateJob((prev) => ({
 				status: "running",
-				items: mergeTranslatePageItems(prev.items, pageIndex, pendingItems),
+				items: mergeTranslatePageItems(
+					resetRunningTranslateItems(prev.items),
+					pageIndex,
+					pendingItems,
+				),
 			}));
 			void (async () => {
 				const sidecar = await readLayoutTranslateSidecar(
@@ -234,10 +281,21 @@ export function usePdfLayoutTranslate({
 				if (ac.signal.aborted) return;
 				const pageItems = applyLayoutTranslateSidecar(pendingItems, sidecar);
 				const needsRun = hasPendingLayoutTranslateItems(pageItems);
-				setLayoutTranslateJob((prev) => ({
-					status: needsRun ? "running" : "done",
-					items: mergeTranslatePageItems(prev.items, pageIndex, pageItems),
-				}));
+				setLayoutTranslateJob((prev) => {
+					const merged = mergeTranslatePageItems(
+						prev.items,
+						pageIndex,
+						pageItems,
+					);
+					return {
+						status: needsRun
+							? "running"
+							: hasPendingLayoutTranslateItems(merged)
+								? "partial"
+								: "done",
+						items: merged,
+					};
+				});
 				if (!needsRun) return;
 				const finalPageItems = await runLayoutRegionTranslate({
 					items: pageItems,
@@ -263,6 +321,8 @@ export function usePdfLayoutTranslate({
 						}));
 					},
 				});
+				// Only the current live run may publish or persist its final result.
+				if (ac.signal.aborted || layoutTranslateAbortRef.current !== ac) return;
 				persistLayoutTranslateSidecarBestEffort(
 					paperAbsPath,
 					cacheKey,
@@ -272,21 +332,17 @@ export function usePdfLayoutTranslate({
 						replacePageIndexes: [pageIndex],
 					},
 				);
-				if (ac.signal.aborted) {
-					setLayoutTranslateJob((prev) => ({
-						status: "cancelled",
-						items: applyHiddenPages(
-							mergeTranslatePageItems(prev.items, pageIndex, finalPageItems),
-						),
-					}));
-					return;
-				}
-				setLayoutTranslateJob((prev) => ({
-					status: "done",
-					items: applyHiddenPages(
-						mergeTranslatePageItems(prev.items, pageIndex, finalPageItems),
-					),
-				}));
+				setLayoutTranslateJob((prev) => {
+					const merged = mergeTranslatePageItems(
+						prev.items,
+						pageIndex,
+						finalPageItems,
+					);
+					return {
+						status: hasPendingLayoutTranslateItems(merged) ? "partial" : "done",
+						items: applyHiddenPages(merged),
+					};
+				});
 			})()
 				.catch((e) => {
 					if (ac.signal.aborted) return;
@@ -295,7 +351,7 @@ export function usePdfLayoutTranslate({
 						description: message,
 					});
 					setLayoutTranslateJob((prev) => ({
-						status: "done",
+						status: "partial",
 						items: prev.items,
 					}));
 				})
@@ -313,9 +369,15 @@ export function usePdfLayoutTranslate({
 			const pageItems = layoutTranslateJobRef.current.items.filter(
 				(item) => item.pageIndex === pageIndex,
 			);
-			const pageActive = pageItems.some(
-				(item) => item.status === "running" || item.translated?.trim(),
-			);
+			if (pageItems.some((item) => item.status === "running")) {
+				stopLayoutTranslate();
+				return;
+			}
+			if (pageItems.length > 0 && hasPendingLayoutTranslateItems(pageItems)) {
+				startPageLayoutTranslate(pageIndex);
+				return;
+			}
+			const pageActive = pageItems.some((item) => item.translated?.trim());
 			if (pageActive) {
 				hiddenPageIndexesRef.current.add(pageIndex);
 				setLayoutTranslateJob((prev) => ({
@@ -326,7 +388,7 @@ export function usePdfLayoutTranslate({
 			}
 			startPageLayoutTranslate(pageIndex);
 		},
-		[startPageLayoutTranslate],
+		[startPageLayoutTranslate, stopLayoutTranslate],
 	);
 
 	const toggleLayoutTranslate = useCallback(() => {
@@ -334,11 +396,15 @@ export function usePdfLayoutTranslate({
 			stopLayoutTranslate();
 			return;
 		}
+		if (layoutTranslateJob.status === "partial") {
+			startLayoutTranslate();
+			return;
+		}
 		if (
 			layoutTranslateJob.status === "done" ||
 			layoutTranslateJob.status === "cancelled"
 		) {
-			// Second click clears overlays; third starts again from the button.
+			// Complete/explicitly-cancelled overlays keep the original clear action.
 			if (layoutTranslateJob.items.some((it) => it.translated)) {
 				clearLayoutTranslate();
 				return;
@@ -404,9 +470,11 @@ export function usePdfLayoutTranslate({
 		layoutTranslateJob.items.some((it) => it.translated);
 	const layoutTranslateLabel = layoutTranslateRunning
 		? t("pdf.layoutTranslate.stop")
-		: layoutTranslateActive
-			? t("pdf.layoutTranslate.clear")
-			: t("pdf.layoutTranslate.start");
+		: layoutTranslateJob.status === "partial"
+			? t("pdf.layoutTranslate.start")
+			: layoutTranslateActive
+				? t("pdf.layoutTranslate.clear")
+				: t("pdf.layoutTranslate.start");
 
 	return {
 		layoutTranslateItemsByPage,
