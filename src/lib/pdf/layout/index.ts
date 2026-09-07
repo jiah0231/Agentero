@@ -108,7 +108,7 @@ export {
 	runLayoutRegionTranslate,
 	toLayoutTranslateItems,
 	writeLayoutTranslateSidecar,
-} from "@/lib/pdf/layout/layout-translate";
+} from "@/lib/pdf/layout/layout-translate-reliable";
 export {
 	buildLayoutTranslateChains,
 	isLayoutParagraphContinuation,
